@@ -1,6 +1,6 @@
 'use strict';
 
-// 真实主进程处理器、预加载脚本与固定 PowerShell 命令；网页和模型均为离线替身。
+// 真实主进程处理器、预加载脚本与固定本地命令；网页和模型均为离线替身。
 const {app, BrowserWindow, ipcMain, session} = require('electron');
 const {TaskStore} = require('../../task-store');
 const {Ledger} = require('../../ledger');
@@ -17,7 +17,8 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'campus-command-flow-'));
 const dataDir = path.join(temp, 'cwd');
 fs.mkdirSync(dataDir);
 app.setPath('userData', path.join(temp, 'userData'));
-const command = "Write-Output 'campus-command-test'";
+const mac = process.platform === 'darwin';
+const command = mac ? "printf '%s\\n' campus-command-test" : "Write-Output 'campus-command-test'";
 const calls = [], tasks = [], blocked = [], handlers = new Map(), listeners = new Map();
 let store, ledger;
 class IsolatedTaskStore extends TaskStore {
@@ -163,7 +164,8 @@ app.whenReady().then(async () => {
   assert.ok(title.includes('运行命令'), '授权标题未显示运行命令');
   assert.ok(body.includes(command), '授权卡未显示完整命令');
   assert.ok(body.includes(dataDir.replace(/\\/g, '/')), '授权卡未显示实际工作目录');
-  assert.ok(body.includes('当前 Windows 用户权限') && body.includes('可访问工作空间外的文件和网络') && body.includes('不是沙箱'), '授权卡未说明 PowerShell 实际权限');
+  const shellNotice = mac ? 'zsh 以当前 macOS 用户权限' : 'PowerShell 以当前 Windows 用户权限';
+  assert.ok(body.includes(shellNotice) && body.includes('可访问工作空间外的文件和网络') && body.includes('不是沙箱'), '授权卡未说明命令实际权限');
   await click(win, await panelNode(win, mode === 'deny' ? 'deny' : 'allowOnce'));
 
   if (mode === 'deny') {

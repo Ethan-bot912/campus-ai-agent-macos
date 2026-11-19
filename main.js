@@ -10,6 +10,7 @@ const {Ledger} = require('./ledger');
 const {TaskStore} = require('./task-store');
 const {scopeFor} = require('./access-policy');
 const {resultText} = require('./result-format');
+const {buildInjectSource} = require('./inject');
 
 const BASE = __dirname;
 const USER_DATA = path.join(BASE, 'user-data');
@@ -36,7 +37,7 @@ if (!hasInstanceLock) app.quit();
 const ledger = new Ledger({dir: LEDGER_DIR, runId: RUN_ID});
 const taskStore = new TaskStore({dir: TASK_DIR, runId: RUN_ID});
 let activeCancel = null;
-let injectSource = '';
+const injectSource = buildInjectSource(process.platform);
 let mainWindow = null;
 let executionEpoch = 0;
 
@@ -319,7 +320,6 @@ ipcMain.handle('agent:list', async (event, payload) => {
 
 if (hasInstanceLock) app.whenReady().then(async () => {
   await ledger.init();
-  injectSource = await fs.readFile(path.join(BASE, 'inject.js'), 'utf8');
   const ses = session.fromPartition(PARTITION);
   ses.setPermissionRequestHandler((webContents, permission, callback) => callback(false));
   ses.setPermissionCheckHandler(() => false);

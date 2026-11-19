@@ -2,7 +2,11 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const {spawn} = require('node:child_process');
+const {execFile, spawn} = require('node:child_process');
+const {promisify} = require('node:util');
+
+const execFileAsync = promisify(execFile);
+const IS_MAC = process.platform === 'darwin';
 
 const MAX_FILE_BYTES = 200 * 1024;
 const MAX_WRITE_BYTES = 1024 * 1024;
@@ -139,7 +143,17 @@ async function movePath(scope, request) {
   return {ok: true, tool: 'move', from: from.path, to: to.path};
 }
 
-function killTree(child) {
+async function killTree(child) {
+  if (IS_MAC) {
+    if (!child.pid) return false;
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return true;
+    } catch (error) {
+      if (error.code !== 'ESRCH') console.error('无法终止命令进程组：', error.message);
+      return false;
+    }
+  }
   return new Promise(resolve => {
     const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {windowsHide: true, stdio: 'ignore'});
     killer.on('error', () => {
@@ -157,12 +171,18 @@ async function runCommand(scope, request, controls) {
   if (!cwdInfo.isDirectory()) throw new ToolError('NOT_DIRECTORY', '工作目录不是目录。');
   const timeoutSec = Math.min(Math.max(Number(request.timeout_sec) || 120, 1), MAX_TIMEOUT_SEC);
   const startedAt = Date.now();
-  const script = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; $ProgressPreference='SilentlyContinue'; ${request.command}`;
-  const child = spawn(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-    {cwd, windowsHide: true}
-  );
+  let child;
+  if (IS_MAC) {
+    // 独立进程组让取消和超时能同时停止 shell 和同组子进程。
+    child = spawn('/bin/zsh', ['-f', '-c', request.command], {cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe']});
+  } else {
+    const script = `[Console]::OutputEncoding=[Text.Encoding]::UTF8; $ProgressPreference='SilentlyContinue'; ${request.command}`;
+    child = spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      {cwd, windowsHide: true}
+    );
+  }
 
   let stdout = '';
   let stderr = '';
@@ -227,8 +247,16 @@ async function runCommand(scope, request, controls) {
   });
 }
 
-function openTerminal() {
+async function openTerminal(scope) {
   try {
+    if (IS_MAC) {
+      await execFileAsync('/usr/bin/open', ['-b', 'com.apple.Terminal', scope.defaultCwd]);
+      return {
+        ok: true,
+        tool: 'open_terminal',
+        message: '已请求 Terminal 打开工作目录；请用户确认窗口是否显示，助手看不到窗口里的输入。'
+      };
+    }
     const child = spawn('powershell.exe', ['-NoLogo', '-NoExit'], {detached: true, stdio: 'ignore', windowsHide: false});
     child.unref();
     return {
@@ -266,7 +294,7 @@ async function executeTool(scope, request, controls = {}) {
         clearCancel: controls.clearCancel || (() => {})
       });
     case 'open_terminal':
-      return openTerminal();
+      return openTerminal(scope);
     default:
       throw new ToolError('BAD_TOOL', '不支持的工具。');
   }

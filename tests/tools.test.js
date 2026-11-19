@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const tools = require('../tools');
+const mac = process.platform === 'darwin';
 
 let base;
 let scope;
@@ -94,10 +95,11 @@ test('移动/重命名并自动创建目标目录', async () => {
 });
 
 test('运行命令取得输出与退出码', async () => {
-  const ok = await tools.runCommand(scope, {command: 'Write-Output "hello-from-ps"'}, {setCancel() {}, clearCancel() {}});
+  const command = mac ? "printf '%s\\n' hello-from-shell" : 'Write-Output "hello-from-shell"';
+  const ok = await tools.runCommand(scope, {command}, {setCancel() {}, clearCancel() {}});
   assert.equal(ok.ok, true);
   assert.equal(ok.exitCode, 0);
-  assert.match(ok.stdout, /hello-from-ps/);
+  assert.match(ok.stdout, /hello-from-shell/);
 
   const bad = await tools.runCommand(scope, {command: 'exit 3'}, {setCancel() {}, clearCancel() {}});
   assert.equal(bad.ok, false);
@@ -106,16 +108,41 @@ test('运行命令取得输出与退出码', async () => {
 
 test('命令超时会被终止并标记 timedOut', async () => {
   const startedAt = Date.now();
-  const result = await tools.runCommand(scope, {command: 'Start-Sleep -Seconds 30', timeout_sec: 1}, {setCancel() {}, clearCancel() {}});
+  const command = mac ? "sleep 10 & printf 'started\\n'; wait" : 'Start-Sleep -Seconds 30';
+  const result = await tools.runCommand(scope, {command, timeout_sec: 1}, {setCancel() {}, clearCancel() {}});
   assert.equal(result.timedOut, true);
   assert.equal(result.ok, false);
-  assert.equal(Date.now() - startedAt < 20000, true);
+  if (mac) {
+    assert.match(result.stdout, /started/);
+    assert.equal(result.terminationConfirmed, true);
+  }
+  assert.ok(Date.now() - startedAt < (mac ? 5000 : 20000));
+});
+
+test('macOS 取消命令会终止整个进程组', {skip: !mac}, async () => {
+  let timer;
+  const result = await tools.runCommand(scope, {command: 'sleep 10 & wait'}, {
+    setCancel(cancel) { timer = setTimeout(cancel, 250); },
+    clearCancel() { clearTimeout(timer); }
+  });
+  assert.equal(result.cancelled, true);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.terminationConfirmed, true);
+  assert.ok(result.durationMs < 5000);
+});
+
+test('macOS 命令从标准输入读取时收到 EOF', {skip: !mac}, async () => {
+  const result = await tools.executeTool(scope, {tool: 'run_command', command: 'cat', timeout_sec: 1});
+  assert.equal(result.ok, true);
+  assert.equal(result.stdout, '');
 });
 
 test('命令的工作目录被采用', async () => {
-  const result = await tools.runCommand(scope, {command: '(Get-Location).Path'}, {setCancel() {}, clearCancel() {}});
+  const result = await tools.runCommand(scope, {command: mac ? 'pwd -P' : '(Get-Location).Path'}, {setCancel() {}, clearCancel() {}});
   assert.equal(result.ok, true);
-  assert.equal(result.stdout.trim().toLowerCase(), base.toLowerCase());
+  if (mac) assert.equal(result.stdout.trim(), await fs.realpath(base));
+  else assert.equal(result.stdout.trim().toLowerCase(), base.toLowerCase());
 });
 
 test('读取仍然限制 200 KB 并拒绝二进制', async () => {

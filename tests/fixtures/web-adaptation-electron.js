@@ -76,6 +76,61 @@ async function panelNode(win, id) {
   return findById(tree.root, id);
 }
 
+async function verifyPanelDrag(win) {
+  const cdp = win.webContents.debugger;
+  async function center(id) {
+    const {nodeId} = await panelNode(win, id);
+    const {model: {content: box}} = await cdp.sendCommand('DOM.getBoxModel', {nodeId});
+    return {x: (box[0] + box[4]) / 2, y: (box[1] + box[5]) / 2};
+  }
+  async function mouse(type, point, pressed) {
+    await cdp.sendCommand('Input.dispatchMouseEvent', {
+      type, ...point, buttons: pressed ? 1 : 0, button: type === 'mouseMoved' && !pressed ? 'none' : 'left', clickCount: 1
+    });
+  }
+  async function clickMinimize() {
+    const point = await center('minimize');
+    await mouse('mousePressed', point, true);
+    await mouse('mouseReleased', point, false);
+  }
+  async function dragTo(point) {
+    const start = await center('panelGrip');
+    await mouse('mouseMoved', start, false);
+    await mouse('mousePressed', start, true);
+    await mouse('mouseMoved', {x: start.x - 5, y: start.y}, true);
+    await mouse('mouseMoved', point, true);
+    await mouse('mouseReleased', point, false);
+  }
+  const grip = await panelNode(win, 'panelGrip');
+  const {object: {objectId}} = await cdp.sendCommand('DOM.resolveNode', {nodeId: grip.nodeId});
+  async function panelRect() {
+    const {result} = await cdp.sendCommand('Runtime.callFunctionOn', {
+      objectId, returnByValue: true,
+      functionDeclaration: 'function () { return this.closest(".panel").getBoundingClientRect().toJSON(); }'
+    });
+    return result.value;
+  }
+
+  await clickMinimize();
+  const minimized = await panelRect();
+  assert.ok(minimized.height < 150, `原地收起应切换到小面板：${JSON.stringify(minimized)}`);
+  await dragTo({x: 150, y: 135});
+  const collapsed = await panelRect();
+  assert.ok(collapsed.x < 150 && collapsed.y < 135 && collapsed.height < 150, `收起状态应能拖到左上：${JSON.stringify(collapsed)}`);
+  await clickMinimize();
+  const expanded = await panelRect();
+  assert.ok(expanded.height > 150 && expanded.x === collapsed.x && expanded.y === collapsed.y, '有空间时展开应保留拖动位置');
+  const viewport = await win.webContents.executeJavaScript('({width: innerWidth, height: innerHeight})');
+  await dragTo({x: viewport.width - 2, y: viewport.height - 2});
+  const edge = await panelRect();
+  assert.ok(edge.x > expanded.x && edge.y > expanded.y && edge.right <= viewport.width && edge.bottom <= viewport.height, '展开状态应能拖动且停在窗口内');
+  await cdp.sendCommand('Emulation.setDeviceMetricsOverride', {width: 560, height: 450, deviceScaleFactor: 1, mobile: false});
+  await until(async () => {
+    const rect = await panelRect();
+    return rect.right <= 560 && rect.bottom <= 450;
+  }, '窗口缩小时浮动面板自动收回可视范围');
+}
+
 app.whenReady().then(async () => {
   const ses = session.fromPartition('stream-adaptation');
   ses.webRequest.onBeforeRequest({urls: ['<all_urls>']}, (details, callback) => {
@@ -117,6 +172,7 @@ app.whenReady().then(async () => {
   assert.equal(calls.length, 1, '同一回复重渲染不得重复执行');
   assert.equal(await win.webContents.executeJavaScript('window.sent.length'), 2, '重渲染不得重复回填');
   assert.equal(deliveries.filter(value => value === 'submitted').length, 1);
+  await verifyPanelDrag(win);
   win.webContents.debugger.detach();
   win.destroy();
   process.stdout.write('fixture passed\n');

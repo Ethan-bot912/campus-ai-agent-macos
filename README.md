@@ -4,7 +4,25 @@
 
 ## 运行
 
-需要 Windows、Git 和 Node.js 22.12.0 或更新版本。第一次运行请按以下步骤操作：
+### macOS
+
+安装 [Node.js](https://nodejs.org/) 22.12.0 或更新版本，并在系统终端用 `git --version` 确认 Git 可用。然后在想保存项目的目录运行：
+
+```sh
+git clone https://github.com/Ethan-bot912/campus-ai-agent-desktop.git
+cd campus-ai-agent-desktop
+npm ci
+node node_modules/electron/install.js
+npm start
+```
+
+首次安装 Electron 会下载对应架构的运行程序。命令工具使用系统自带的 `/bin/zsh`，打开终端会用系统自带的 Terminal 打开工作目录。macOS 可能对桌面、文稿等目录单独要求访问权限。
+
+安装完成后，可以在访达里双击 `启动校园 AI.command` 打开桌面端。
+
+### Windows
+
+需要 Git 和 Node.js 22.12.0 或更新版本。第一次运行请按以下步骤操作：
 
 1. 从 [Node.js 官网](https://nodejs.org/)安装符合版本要求的 LTS 版，从 [Git 官网](https://git-scm.com/downloads/win)安装 Git。安装完成后关闭并重新打开 PowerShell。
 2. 检查工具是否可用：
@@ -39,17 +57,20 @@ npm start
 
 如果 `cd` 提示找不到路径，请先检查项目是否下载成功、当前目录是否包含项目文件夹；如果提示找不到 `node` 或 `npm`，先完成上面的 Node.js 安装和版本检查。如果 PowerShell 提示禁止运行 `npm.ps1`，可以在上述命令中将 `npm` 换成 `npm.cmd`。
 
-在打开的网页内自行登录，然后直接发送任务。默认可以读取当前 Windows 用户可读的目录和文本，读取结果会发给学校 AI。写入、删除、移动、运行命令和打开终端需要确认；PowerShell 以当前用户权限运行，工作空间不是命令沙箱。
+### 使用
+
+在打开的网页内自行登录，然后直接发送任务。默认可以读取当前用户可读的目录和文本，读取结果会发给学校 AI。写入、删除、移动、运行命令和打开终端需要确认；系统 shell 以当前用户权限运行，工作空间不是命令沙箱。
 
 面板会展示任务状态、本机工具步骤、模型报告和文件成果。模型声称完成不代表本机已验证；发送或执行状态未知时请检查实际情况，程序不会自动重跑。
+按住面板顶部左侧的六点把手，可以在窗口内拖动面板。把手获得焦点后也可以用方向键移动。
 
 ## 测试
 
-```powershell
+```sh
 npm test
 ```
 
-自动测试主要使用临时文件和模拟学校网页、模型，不能代替真实网页或模型能力验收；部分测试会运行固定的无害 PowerShell 命令。
+自动测试主要使用临时文件和模拟学校网页、模型，不能代替真实网页或模型能力验收；部分测试会运行固定的无害 zsh 或 PowerShell 命令。
 
 ## 当前限制
 

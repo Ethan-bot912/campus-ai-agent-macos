@@ -3,11 +3,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {spawn} = require('node:child_process');
-const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const {buildInjectSource} = require('../inject');
 
-test('生成中分片和重渲染不会提前或重复执行工具请求', {timeout: 45000}, async t => {
+test('生成、重渲染及浮动面板拖动保持预期行为', {timeout: 45000}, async t => {
   const env = {...process.env};
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(require('electron'), [path.join(__dirname, 'fixtures', 'web-adaptation-electron.js')], {env, windowsHide: true});
@@ -23,7 +23,7 @@ test('生成中分片和重渲染不会提前或重复执行工具请求', {time
 });
 
 test('工具说明仅附加到预期聊天请求且不会重复附加', async () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', 'inject.js'), 'utf8');
+  const source = buildInjectSource('darwin');
   const calls = [];
   const document = {documentElement: {dataset: {}}};
   const originalFetch = function(input, init) {
@@ -43,6 +43,9 @@ test('工具说明仅附加到预期聊天请求且不会重复附加', async ()
   assert.equal(calls.length, 1);
   const modified = JSON.parse(calls[0].init.body);
   assert.ok(modified.content.startsWith('[[CAMPUS_AGENT_GUIDE_BEGIN]]\n'));
+  assert.match(modified.content, /macOS，run_command 使用 zsh/);
+  assert.match(modified.content, /"command":"ls -la","cwd":"\/Users\/example"/);
+  assert.doesNotMatch(modified.content, /PowerShell/);
   assert.ok(modified.content.endsWith('[[CAMPUS_AGENT_GUIDE_END]]\n\n合成任务'));
   assert.equal(modified.approach_id, input.approach_id);
   assert.deepEqual(modified.extra, input.extra);
@@ -84,4 +87,17 @@ test('工具说明仅附加到预期聊天请求且不会重复附加', async ()
   await window.fetch('https://ai.cuhk.edu.cn/chat/?fixture=1', init);
   assert.ok(JSON.parse(calls.at(-1).init.body).content.endsWith('[[CAMPUS_AGENT_GUIDE_END]]\n\n合成任务'));
   assert.equal(window.__campusAgentGuideHits, 2);
+});
+
+test('Windows 自动注入仍使用 PowerShell 和 Windows 路径', async () => {
+  const window = {fetch: async (url, init) => JSON.parse(init.body).content};
+  const document = {documentElement: {dataset: {}}};
+  const context = {window, document, location: new URL('https://ai.cuhk.edu.cn/chat/'), URL};
+  vm.runInNewContext(buildInjectSource('win32'), context);
+  const content = await window.fetch('/chat/', {
+    method: 'POST',
+    body: JSON.stringify({content: '合成任务', approach_id: 'fixture'})
+  });
+  assert.match(content, /Windows，run_command 使用 PowerShell/);
+  assert.match(content, /"command":"Get-ChildItem D:\/","cwd":"D:\/"/);
 });

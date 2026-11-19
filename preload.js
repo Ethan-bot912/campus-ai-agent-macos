@@ -5,10 +5,14 @@ const crypto = require('node:crypto');
 const {parseToolRequest, MUTATING_TOOLS} = require('./protocol');
 const {isCurrentTask} = require('./task-guard');
 const {parseModelProgress, summarizeLocalEvidence, trackFailure} = require('./task-report');
+const {buildToolGuide} = require('./inject');
 
 const CHAT_ORIGIN = 'https://ai.cuhk.edu.cn';
 const GUIDE_BEGIN = '[[CAMPUS_AGENT_GUIDE_BEGIN]]';
 const GUIDE_END = '[[CAMPUS_AGENT_GUIDE_END]]';
+const IS_MAC = process.platform === 'darwin';
+const OS_NAME = IS_MAC ? 'macOS' : 'Windows';
+const COMMAND_SHELL = IS_MAC ? 'zsh' : 'PowerShell';
 
 // 页面元素的候选选择器。真实页面尚未登录核对，因此保留多种可能并可用“诊断页面元素”查看实际匹配。
 const SELECTORS = {
@@ -69,6 +73,11 @@ function start() {
       *,*::before,*::after{box-sizing:border-box}
       .panel{position:fixed;z-index:2147483646;right:0;top:0;bottom:0;width:min(420px,calc(100vw - 16px));display:flex;flex-direction:column;overflow:hidden;border-left:1px solid var(--border-default);background:var(--bg-panel);color:var(--text-primary);box-shadow:-8px 0 32px #0005;font:13px/1.5 var(--font-sans);color-scheme:dark}
       .panel.minimized{top:auto;bottom:16px;right:16px;width:min(320px,calc(100vw - 32px));max-height:calc(100vh - 32px);border:1px solid var(--border-default);border-radius:10px}
+      .panel.floating{right:auto;bottom:auto;border:1px solid var(--border-default);border-radius:10px}
+      .panel.floating:not(.minimized){height:min(680px,80vh)}
+      button.panel-grip{flex:none;width:20px;height:28px;padding:0;border-color:transparent;background:transparent;color:var(--text-secondary);font-size:17px;cursor:grab;touch-action:none;user-select:none}
+      button.panel-grip:hover{background:var(--bg-surface-elevated)}
+      button.panel-grip:active{cursor:grabbing}
       .head{height:46px;min-height:46px;display:flex;align-items:center;gap:8px;padding:0 14px;border-bottom:1px solid var(--border-subtle);background:var(--bg-panel)}
       .status-pill{display:flex;align-items:center;gap:7px;white-space:nowrap;border:1px solid var(--border-default);border-radius:999px;padding:4px 10px;background:#ffffff0a;font-size:11.5px}
       .status-dot{width:6px;height:6px;border-radius:50%;background:var(--status-success);box-shadow:0 0 6px #34d39999;animation:breathe 2.2s infinite ease-in-out}
@@ -99,10 +108,11 @@ function start() {
       #approvalTitle{font-weight:600;color:#fbbf24;margin:0 0 8px;overflow-wrap:anywhere;font-size:11.5px}#approvalBody{max-height:min(160px,24vh);background:var(--bg-code);margin:0;color:#e4e4e7;border-color:var(--border-subtle);white-space:pre-wrap}
       .diff-add{color:#86efac;background:#4ade801f}.diff-del{color:#fca5a5;background:#f871711f}.approval-actions{display:grid;grid-template-columns:1.05fr 1.25fr .75fr;gap:7px;margin-top:10px}.approval-actions button{min-width:0;padding:7px 4px}
       .footer{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 14px;border-top:1px solid var(--border-subtle);background:var(--bg-panel)}.footer-note{font-size:10.5px;color:var(--text-muted)}.footer-controls{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-      @media(max-height:460px){.panel:not(.minimized){bottom:0}#approvalBody{max-height:70px}.approval-actions button{font-size:10px}.timeline{padding:8px 12px}}
+      @media(max-height:460px){#approvalBody{max-height:70px}.approval-actions button{font-size:10px}.timeline{padding:8px 12px}}
     </style>
     <div class="panel" role="region" aria-label="校园 AI 本地 Agent 原型">
       <header class="head">
+        <button id="panelGrip" class="panel-grip" type="button" aria-label="移动面板" title="拖动面板，也可用方向键移动">⠿</button>
         <div class="status-pill" id="statusPill"><span class="status-dot" aria-hidden="true"></span><span id="listenLabel">等待消息</span></div>
         <button id="scopeTrigger" class="scope-trigger" title="查看目录访问范围">▱ <span id="scopeLabel">无工作区限制</span> ▾</button>
         <button id="settingsToggle" class="icon-btn" aria-label="设置、目录范围与诊断" title="设置、目录范围与诊断">⚙</button>
@@ -120,7 +130,7 @@ function start() {
             <p class="scope" id="workspace">工作空间：未选择</p><p class="scope" id="extraRoots">额外目录：无</p>
             <div class="row"><button id="chooseWorkspace">选择工作空间</button><button id="chooseExtra">授权额外目录</button><button id="clearExtra">撤销额外目录</button><button id="clearWorkspace">不使用工作空间</button></div>
             <div class="row"><button id="arm">${ARM_LABEL}</button><button id="endTask">结束任务</button></div>
-            <p class="hint">可直接读取本机文件，读取结果会发送给学校 AI。未选目录时，写入等操作可访问当前账户有权限的位置，仍需授权；PowerShell 不受目录沙箱限制。</p>
+            <p class="hint">可直接读取本机文件，读取结果会发送给学校 AI。未选目录时，写入等操作可访问当前账户有权限的位置，仍需授权；${COMMAND_SHELL} 不受目录沙箱限制。</p>
           </details>
           <details><summary>文件记录</summary><pre id="artifacts">（无）</pre></details>
           <details><summary>原始记录与诊断</summary>
@@ -158,6 +168,52 @@ function start() {
   const allowToolBtn = shadow.getElementById('allowTool');
   const denyBtn = shadow.getElementById('deny');
   const panel = shadow.querySelector('.panel');
+  const panelGrip = shadow.getElementById('panelGrip');
+  let panelPosition = null;
+  let drag = null;
+
+  function placePanel() {
+    if (!panelPosition) return;
+    const {width, height} = panel.getBoundingClientRect();
+    const left = Math.max(0, Math.min(panelPosition.left, window.innerWidth - width));
+    const top = Math.max(0, Math.min(panelPosition.top, window.innerHeight - height));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+  }
+
+  function movePanel(left, top) {
+    panelPosition = {left, top};
+    panel.classList.add('floating');
+    placePanel();
+  }
+
+  panelGrip.addEventListener('pointerdown', event => {
+    if (!event.isTrusted || !event.isPrimary || event.button !== 0) return;
+    const {left, top} = panel.getBoundingClientRect();
+    drag = {id: event.pointerId, x: event.clientX, y: event.clientY, left, top, moved: false};
+    panelGrip.setPointerCapture(event.pointerId);
+  });
+  window.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+    drag.moved = true;
+    movePanel(drag.left + dx, drag.top + dy);
+  });
+  panelGrip.addEventListener('lostpointercapture', event => {
+    if (event.pointerId === drag?.id) drag = null;
+  });
+  panelGrip.addEventListener('keydown', event => {
+    if (!event.isTrusted) return;
+    const offset = {ArrowLeft: [-16, 0], ArrowRight: [16, 0], ArrowUp: [0, -16], ArrowDown: [0, 16]}[event.key];
+    if (!offset) return;
+    event.preventDefault();
+    const {left, top} = panel.getBoundingClientRect();
+    movePanel(left + offset[0], top + offset[1]);
+  });
+  window.addEventListener('resize', placePanel);
+  new ResizeObserver(placePanel).observe(panel);
 
   let armed = false;
   let paused = false;
@@ -841,19 +897,20 @@ function start() {
       return `路径：${request.path}\n字节数：${bytes}\n\n完整新内容：\n${request.content}`;
     }
     if (request.tool === 'run_command') {
-      return `命令：\n${request.command}\n\n工作目录：${request.cwd || scopeInfo.workspace || scopeInfo.extraRoots[0] || scopeInfo.defaultCwd || '程序目录'}\n超时：${request.timeout_sec || 120} 秒\nPowerShell 以当前 Windows 用户权限运行，可访问工作空间外的文件和网络；不是沙箱。`;
+      return `命令：\n${request.command}\n\n工作目录：${request.cwd || scopeInfo.workspace || scopeInfo.extraRoots[0] || scopeInfo.defaultCwd || '程序目录'}\n超时：${request.timeout_sec || 120} 秒\n${COMMAND_SHELL} 以当前 ${OS_NAME} 用户权限运行，可访问工作空间外的文件和网络；不是沙箱。`;
     }
     if (request.tool === 'delete') {
       return `目标：${request.path}\n递归：${request.recursive ? '是（会删除整个目录）' : '否'}\n\n删除后本原型无法撤销。`;
     }
     if (request.tool === 'move') return `从：${request.from}\n到：${request.to}`;
+    if (IS_MAC) return '会用系统自带的 Terminal 打开工作目录，以当前 macOS 用户权限运行，不受工作空间限制。';
     return '会启动一个新的 PowerShell 窗口，以当前 Windows 用户权限运行，不受工作空间限制。';
   }
 
   function askApproval(request, preview = '') {
     approvalTitle.textContent = approvalSummary(request);
     const scopeNotice = !scopeInfo.workspace && !scopeInfo.extraRoots.length && ['write_file', 'delete', 'move'].includes(request.tool)
-      ? '\n\n未选择工作空间；本次操作可访问当前 Windows 账户有权限的路径。' : '';
+      ? `\n\n未选择工作空间；本次操作可访问当前 ${OS_NAME} 账户有权限的路径。` : '';
     const body = approvalDetail(request) + preview + scopeNotice + (request.tool === 'write_file' ? '\n\n写入文件每次仍需确认。' : '');
     approvalBody.replaceChildren();
     let inDiff = false;
@@ -1378,21 +1435,8 @@ function start() {
       setStatus('聊天框已有内容，未覆盖；请先处理草稿后再点“填入工具请求说明”。');
       return;
     }
-    const guide = `我正在通过本地原型测试工具调用。你无法直接操作我的电脑；需要操作时，请只输出一个下面格式的请求，然后等待结果返回，不要提前声称已经做到。
-
-可用工具（每次只输出一个请求；读取可访问本机文件，修改仅限已授权目录）：
-- list_dir {"tool":"list_dir","path":"D:/some/dir"}
-- read_file {"tool":"read_file","path":"D:/some/file.txt"}
-- write_file {"tool":"write_file","path":"D:/some/file.txt","content":"文本内容"}
-- delete {"tool":"delete","path":"D:/x.txt"}  目录需加 "recursive":true
-- move {"tool":"move","from":"D:/a.txt","to":"D:/b.txt"}
-- run_command {"tool":"run_command","command":"Get-ChildItem D:/","cwd":"D:/","timeout_sec":120}
-- open_terminal {"tool":"open_terminal"}  打开一个空白 PowerShell 窗口给我自己用
-
-路径可以是绝对路径（Windows 路径用正斜杠，或把反斜杠写成双反斜杠）。我的系统是 Windows。每个请求必须放在同一个以三个反引号加 json 开头的代码块里，包含 PC_TOOL_REQUEST、合法 JSON 和 PC_TOOL_END。收到结果后再继续；ok 为 false 时不要声称成功。`;
-
     try {
-      setInputText(input, guide);
+      setInputText(input, buildToolGuide(process.platform));
       setStatus('工具请求说明已填入聊天框（未自动发送）；请检查后自己按发送。');
     } catch (error) {
       setStatus(`填入说明失败：${error.message}`);
